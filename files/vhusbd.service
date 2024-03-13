@@ -1,0 +1,15 @@
+[Unit]
+Description=VirtualHere USB Server
+After=syslog.target
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/vhusbd
+ExecStart=/etc/vhusbd/vhusbd
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
