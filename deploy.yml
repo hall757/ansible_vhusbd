@@ -1,0 +1,119 @@
+---
+- name: Deploy vhusbd server
+  hosts: nodes
+  remote_user: root
+  
+  tasks:
+  
+  # check if we need to do the install
+  - name: Set install flag true
+    set_fact: 
+      do_install: true
+  - name: check for deployed flag
+    stat:
+      path: /etc/vhusbd/.deployed
+    register: deployfile
+    when: do_install
+  - name: Set install flag
+    set_fact: 
+      do_install: false
+      serial_mismatch: false
+    when: deployfile.stat.exists
+
+  # Create folder and update config file
+  - name: Creates directory
+    ansible.builtin.file:
+      path: /etc/vhusbd
+      state: directory
+      owner: root
+      group: root
+      mode: u=rwx,g=x,o=x
+    when: do_install
+  - name: create config
+    ansible.builtin.lineinfile:
+      path: /etc/vhusbd/config.ini
+      regexp: '^License='
+      line: "License={{ license }}"
+      create: yes
+    when: do_install
+  - name: name hub
+    ansible.builtin.lineinfile:
+      path: /etc/vhusbd/config.ini
+      regexp: '^ServerName='
+      line: "ServerName={{ hubname }}"
+      create: yes
+    when: do_install
+
+  # In the even hardware had to be swapped out and you haven't
+  # gotten authorization to purchase a new license for the new
+  # hardware.  Spoof the old serial number so your old license
+  # will continue to work.  
+  - name: check if system serial number matches
+    shell: "grep -c {{ serialnum }} /proc/cpuinfo"
+    register: grep_output
+    ignore_errors: yes
+    changed_when: false
+    when: do_install
+  - name: set serial_mismatch
+    set_fact:
+      serial_mismatch: "{% if grep_output.stdout == '0' %}true{% else %}false{% endif %}"
+    when: do_install
+  # Skip the next section when the serial matches the license
+  - name: copy real cpuinfo
+    shell: "cat /proc/cpuinfo > /etc/vhusbd/cpuinfo"
+    when:
+      - serial_mismatch
+      - do_install
+  - name: spoof old serial number in cpuinfo
+    ansible.builtin.lineinfile:
+      path: /etc/vhusbd/cpuinfo
+      regexp: '^(Serial\s*:\s*)(.*)$'
+      line: '\g<1>{{ serialnum }}'
+      backrefs: yes
+    when:
+      - serial_mismatch
+      - do_install
+  - name: mount and bind new cpuinfo
+    ansible.posix.mount:
+      path: /proc/cpuinfo
+      src: /etc/vhusbd/cpuinfo
+      opts: bind
+      state: mounted
+      fstype: none
+    when:
+      - serial_mismatch
+      - do_install
+
+  # deploy binary, systemd unit, and start service
+  - name: install vhusbdarm
+    ansible.builtin.get_url:
+      url: 'https://www.virtualhere.com/sites/default/files/usbserver/{{ vhusbdbinary }}'
+      dest: /etc/vhusbd/vhusbd
+      owner: root
+      group: root
+      mode: '0700'
+    when: do_install
+  - name: copy unit file
+    copy:
+      src: vhusbd.service
+      dest: /etc/systemd/system/vhusbd.service
+      owner: root
+      group: root
+      mode: '0644'
+    when: do_install
+  - name: enable service
+    ansible.builtin.systemd_service:
+      name: vhusbd
+      state: started
+      daemon_reload: true
+      enabled: true
+    when: do_install
+  - name: force restart
+    shell: 'systemctl restart vhusbd'
+    when: do_install
+
+  # As running this is disruptive to configured systems
+  # mark the system so the install is skipped next time  
+  - name: Flag system to not reinstall
+    shell: touch /etc/vhusbd/.deployed
+    when: do_install
